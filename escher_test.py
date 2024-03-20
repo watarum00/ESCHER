@@ -46,6 +46,7 @@ def get_action_probabilities(policy, state, legal_actions):
 #ESCHERでの行動選択
 def choose_action(state, update_player, current_policy):
     current_player = state.current_player()
+    print(current_player)
     legal_actions = state.legal_actions()
     if current_player == update_player:
         #更新プレイヤーの時は固定分布から行動を選択
@@ -62,11 +63,20 @@ def sample_trajectory(game, update_player, current_policy):
     state = game.new_initial_state()
     trajectory = []
     while not state.is_terminal():
-        action = choose_action(state, update_player, current_policy)
-        next_state = state.child(action)
-        reward = next_state.rewards()[state.current_player()]
-
-        trajectory.append((state.copy(), action, reward))
+        print("hello")
+        print(state.is_chance_node())
+        if state.is_chance_node():
+            # チャンスノードでのアクションを取得し適用
+            actions, probs = zip(*state.chance_outcomes())
+            action = np.random.choice(actions, p=probs)
+            state.apply_action(action)
+        else:
+            action = choose_action(state, update_player, current_policy)
+            next_state = state.child(action)
+            reward = next_state.rewards()[state.current_player()]
+            state.apply_action(action)
+    
+            trajectory.append((state.copy(), action, reward))
 
     return trajectory
 
@@ -109,10 +119,12 @@ class AveragePolicy(policy.Policy):
             tmp_policy = legal_actions_mask / legal_actions_mask.sum()
         return {i: tmp_policy[i] for i in range(self.game.num_distinct_actions())}
 
-T = 100
+T = 5
+exploitabilities = []
 for t in range(T):
     policies.append(defaultdict(lambda: np.ones(n_actions) / n_actions))#次の戦略の初期化
     for i in range(game.num_players()):
+        print(i)
         trajectory = sample_trajectory(game, i, policies[i])
         #last_reward = trajectory.returns()[i]#プレイヤーiの最終利得
         update_tables_from_trajectory(trajectory, Q_table, V_table)
@@ -146,4 +158,11 @@ for t in range(T):
             ave_policy = AveragePolicy(game, list(range(game.num_players())), cum_strategies)
             payoffs = expected_game_score.policy_value(
                 game.new_initial_state(),[ave_policy, ave_policy])
-            exploitability.exploitability(game, ave_policy)
+            exploitable = exploitability.exploitability(game, ave_policy)
+            exploitabilities.append(exploitable)
+
+plt.plot(exploitabilities)
+plt.title('CFR Exploitability')
+plt.xlabel('iterations')
+plt.ylabel('Exploitability')
+plt.show()
