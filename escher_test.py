@@ -11,21 +11,9 @@ def q_function(Q_table, state, action):
     #状態と行動のペアをキーとしてQ値を参照
     return Q_table.get((state.information_state_string(), action), 0)
 
-def update_q_table(Q_table, state, action, reward, next_state, alpha, gamma):
-    alpha = 0.5
-    gamma = 0.9
-    max_next_q = max(Q_table[next_state.information_state_string(), a] for a in next_state.legal_actions())
-    Q_table[state.information_state_string(), action] += alpha * (reward + gamma * max_next_q - Q_table[state.information_state_string(), action])
-
 def v_function(V_table, state):
     #状態をキーとしてV値を参照
     return V_table.get(state.information_state_string(), 0)
-
-def update_v_table(V_table, state, reward, next_state, alpha, gamma):
-    alpha = 0.5
-    gamma = 0.9
-    V_table[state.information_state_string()] += alpha * (reward + gamma * V_table[next_state.information_state_string()] - V_table[state.information_state_string()])
-
 
 def get_action_probabilities(policy, state, legal_actions):
     state_string = state.information_state_string()
