@@ -1,100 +1,18 @@
-import matplotlib.pyplot as plt
-
-from collections import defaultdict
-
-import pyspiel
 import numpy as np
+import pyspiel
+import matplotlib.pyplot as plt
+from collections import defaultdict
 from open_spiel.python import policy
-from open_spiel.python.algorithms import expected_game_score, exploitability
+from open_spiel.python.algorithms import exploitability
 
-def q_function(Q_table, state, action):
-    #状態と行動のペアをキーとしてQ値を参照
-    return Q_table.get((state.information_state_string(), action), 0)
+class TabularInfoState:
+    def __init__(self, n):
+        self.regret = np.zeros(n)
+        self.strategy = np.zeros(n)
 
-def v_function(V_table, state):
-    #状態をキーとしてV値を参照
-    return V_table.get(state.information_state_string(), 0)
-
-def get_action_probabilities(policy, state, legal_actions):
-    state_string = state.information_state_string()
-    action_probabilities = policy[state_string]
-    # 合法的なアクションのみに対する確率を抽出
-    filtered_action_probabilities = np.array([action_probabilities[a] for a in legal_actions])
-    # 確率を正規化して合計が1になるようにする
-    filtered_action_probabilities /= filtered_action_probabilities.sum()
-    return filtered_action_probabilities
-
-#ESCHERでの行動選択
-def choose_action(state, update_player, current_policy):
-    current_player = state.current_player()
-    legal_actions = state.legal_actions()
-    if current_player != update_player:
-        #それ以外のプレイヤーの時は固定分布から行動を選択
-        action_probabilities = get_action_probabilities(fixed_policy[-1], state, legal_actions)
-    else:
-        #更新プレイヤーの時は現在の方策から行動を選択
-        action_probabilities = get_action_probabilities(current_policy, state, legal_actions)
-
-    action = np.random.choice(legal_actions, p = action_probabilities)
-    return action
-
-#一回のゲームのシミュレーション(trajectory)
-def sample_trajectory(game, update_player, t, policies, state, cum_regrets, Q_table, V_table, cum_strategies):
-    current_policy = policies[t]
-    trajectory = []
-    alpha = 0.6
-    gamma = 0.85
-    if state.is_terminal():
-        print(f'プレイヤー{update_player}の報酬：{state.returns()[update_player]}')
-        return state.returns()[update_player]
-    elif state.is_chance_node():
-        # チャンスノードでのアクションを取得し適用
-        actions, probs = zip(*state.chance_outcomes())
-        action = np.random.choice(actions, p=probs)
-        # 選択されたアクションに対応する確率を取得
-        action_prob = probs[actions.index(action)]
-        state.apply_action(action)
-        return action_prob * sample_trajectory(game, update_player, t, policies, state, cum_regrets, Q_table, V_table, cum_strategies)
-    else:
-        action = choose_action(state, update_player, current_policy)
-        state_str = state.information_state_string()
-        #Q値の更新
-        current_q_value = Q_table.get((state_str, action), 0)
-        next_value = sample_trajectory(game, update_player, t, policies, state.child(action), cum_regrets, Q_table, V_table, cum_strategies)
-        Q_table[(state_str, action)] = current_q_value + alpha * (next_value + gamma * next_value - current_q_value)
-        #V値を更新
-        current_v_value = V_table.get(state, 0)
-        next_value *= current_policy[state_str][action]
-        V_table[state_str] = current_v_value * alpha + next_value * (1 - alpha)
-        #V_table[state_str] = last_reward
-
-        legal_actions = state.legal_actions()
-        legal_actions_mask = np.array(state.legal_actions_mask())
-        state_regret = np.maximum(cum_regrets[state_str], 0)#現在の後悔の値
-        if state_regret.sum() > 0:
-            #後悔マッチング
-            regret_mating_policy = state_regret / state_regret.sum()
-            for a in legal_actions:
-                policies[t+1][state_str][a] = regret_mating_policy[a]
-        else:
-            #方策に均等に確率を割り当てる
-            policies[t+1][state_str] = legal_actions_mask / legal_actions_mask.sum()
-
-        if state.current_player() == i:
-            for a in legal_actions:
-                #即時後悔ベクトルrの計算
-                immediate_regret = q_function(Q_table, state, a) - v_function(V_table, state)
-                #print(f'即時後悔{immediate_regret}')
-                #cum_regretの更新
-                cum_regrets[state_str][a] += immediate_regret
-                #cum_strategiesの更新
-
-        current_policy = policies[-1][state_str]  # 最新のポリシーを取得
-        cum_strategies[state_str] += current_policy  # 累積戦略に現在のポリシーを加算
-
-        return next_value
-    return 0
-
+class UniformSampler:
+    def __call__(self, infostate, n):
+        return np.full(n, 1.0 / n)
 
 class AveragePolicy(policy.Policy):
     def __init__(self, game, player_ids, cum_strategy):
@@ -111,42 +29,148 @@ class AveragePolicy(policy.Policy):
         info_state = state.information_state_string()
         tmp_policy = np.zeros(self.game.num_distinct_actions())
         if info_state in self.cum_strategy and self.cum_strategy[info_state].sum() > 0:
-            tmp_policy[legal_actions] = self.cum_strategy[info_state][legal_actions] / self.cum_strategy[info_state][legal_actions].sum()
+            sum = self.cum_strategy[info_state].sum()
+            for i, a in enumerate(legal_actions):
+                tmp_policy[a] = self.cum_strategy[info_state][i] / sum
         else:
             tmp_policy[legal_actions] = 1.0 / len(legal_actions)
         return {action: tmp_policy[action] for action in legal_actions}
 
-game = pyspiel.load_game('kuhn_poker')
-n_actions = game.num_distinct_actions()
-cum_regrets = defaultdict(lambda: np.zeros(n_actions))
-cum_strategies = defaultdict(lambda: np.zeros(n_actions))
-policies = []
-policies.append(defaultdict(lambda: np.ones(n_actions) / n_actions))
-Q_table = {}
-V_table = {}
-fixed_policy = []
-fixed_policy.append(defaultdict(lambda: np.ones(n_actions) / n_actions))#全ての行動が均等になる。改善の余地あり
+
+class TabularESCHERSolver:
+    def __init__(self, game):
+        self.game = game
+        self.sample_policy = UniformSampler()
+        self.I = {}
+        self.value = {}
+        self.rng = np.random.default_rng()
+        self.cum_strategies = defaultdict(lambda: np.zeros(game.num_distinct_actions()))
+        self.exploitability_history = []
+
+    def strategy(self, I):
+        infostate = self.I.get(I, None)
+        if infostate is None:
+            L = len(self.game.legal_actions(I))
+            return np.full(L, 1.0 / L)
+        else:
+            sigma = np.copy(infostate.strategy)
+            return sigma / np.sum(sigma)
+
+    def regret_match_strategy(self, infostate):
+        pos_regret = np.maximum(infostate.regret, 0)
+        sum_regret = np.sum(pos_regret)
+        if sum_regret > 0:
+            return pos_regret / sum_regret
+        else:
+            return np.full_like(pos_regret, 1.0 / len(pos_regret))
+
+    def infostate(self, h, n):
+        infokey = h.information_state_string()
+        if infokey not in self.I:
+            self.I[infokey] = TabularInfoState(n)
+        return self.I[infokey]
+
+    def train(self, T, show_progress=True):
+        for t in range(T):
+            # 全ての状態価値を事前に計算
+            self.fill_all_values(self.game.new_initial_state())
+            for p in [0, 1]:
+                self.traverse(self.game.new_initial_state(), p)
+            # Update cumulative strategies
+            for k, v in self.I.items():
+                if len(self.cum_strategies[k]) != len(v.strategy):
+                    self.cum_strategies[k] = v.strategy
+                else:
+                    self.cum_strategies[k] += v.strategy
+            # Calculate exploitability and store it
+            if (t + 1) % 1 == 0:
+                ave_policy = AveragePolicy(self.game, list(range(self.game.num_players())), self.cum_strategies)
+                expl = exploitability.exploitability(self.game, ave_policy)
+                self.exploitability_history.append(expl)
+                if t % 100 == 0 and show_progress:
+                    print(f'{t}回目 expl: {expl}')
+
+    def traverse(self, state, p):
+        if state.is_terminal():
+            return state.returns()[p]
+        elif state.is_chance_node():
+            outcomes_with_probs = state.chance_outcomes()
+            action_list, prob_list = zip(*outcomes_with_probs)
+            action = self.rng.choice(action_list, p=prob_list)
+            state.apply_action(action)
+            return self.traverse(state, p)
+
+        infokey = state.information_state_string()
+        legal_actions = state.legal_actions()
+        I = self.infostate(state, len(legal_actions))
+
+        if state.current_player() == p:
+            pi_sample = self.sample_policy(I, len(legal_actions))
+            sigma = self.regret_match_strategy(I)
+            action = self.rng.choice(legal_actions, p=pi_sample)
+            v = 0.0
+            r_hat = np.zeros(len(sigma))
+            for i, a in enumerate(legal_actions):
+                state_copy = state.child(a)
+                q = self.value[tuple(state_copy.history())]
+                if p != 0:
+                    q *= -1
+                r_hat[i] = q
+            v = self.value[tuple(state.history())]
+            if p != 0:
+              v *= -1
+            r_hat -= v
+            I.regret += r_hat
+            I.strategy += sigma
+            state.apply_action(action)
+            return self.traverse(state, p)
+        else:
+            pi_ni = self.regret_match_strategy(I)
+            action = self.rng.choice(legal_actions, p=pi_ni)
+            state.apply_action(action)
+            return self.traverse(state, p)
+
+    def fill_all_values(self, state):
+        if state.is_terminal():
+            u = state.returns()[0]
+            self.value[tuple(state.history())] = u
+            return u
+        elif state.is_chance_node():
+            outcomes_with_probs = state.chance_outcomes()
+            v = 0.0
+            for action, prob in outcomes_with_probs:
+                state_copy = state.child(action)
+                v += prob * self.fill_all_values(state_copy)
+            self.value[tuple(state.history())] = v
+            return v
+        else:
+            infokey = state.information_state_string()
+            sigma = self.regret_match_strategy(self.infostate(state, len(state.legal_actions())))
+            v = 0.0
+            for i, a in enumerate(state.legal_actions()):
+                state_copy = state.child(a)
+                v += sigma[i] * self.fill_all_values(state_copy)
+            self.value[tuple(state.history())] = v
+            return v
+
+    def get_tabular_policy(self):
+        tabular_policy = {}
+        for infokey, infostate in self.I.items():
+            total_strategy = np.sum(infostate.strategy)
+            if total_strategy > 0:
+                normalized_strategy = infostate.strategy / total_strategy
+            else:
+                normalized_strategy = np.full_like(infostate.strategy, 1.0 / len(infostate.strategy))
+            tabular_policy[infokey] = [(i, prob) for i, prob in enumerate(normalized_strategy)]
+        return pyspiel.TabularPolicy(tabular_policy)
 
 
-T = 100
-exploitabilities = []
-for t in range(T):
-    print(f'{t}回目')
-    policies.append(defaultdict(lambda: np.ones(n_actions) / n_actions))#次の戦略の初期化
-    for i in range(game.num_players()):
-        state = game.new_initial_state()
-        sample_trajectory(game, i, t, policies, state, cum_regrets, Q_table, V_table, cum_strategies)
+game = pyspiel.load_game("kuhn_poker") # kuhn_pokerはプレイヤーが0,1
+solver = TabularESCHERSolver(game)
+solver.train(1000)
 
-        if (t + 1) % 1 == 0:
-            ave_policy = AveragePolicy(game, list(range(game.num_players())), cum_strategies)
-            payoffs = expected_game_score.policy_value(
-                game.new_initial_state(),[ave_policy, ave_policy])
-            exploitable = exploitability.exploitability(game, ave_policy)
-            exploitabilities.append(exploitable)
-            print(f'exploitable: {exploitable}')
-
-plt.plot(exploitabilities)
-plt.title('CFR Exploitability')
-plt.xlabel('iterations')
+plt.plot(solver.exploitability_history)
+plt.xlabel('Iterations')
 plt.ylabel('Exploitability')
+plt.title('ESCHER')
 plt.show()
